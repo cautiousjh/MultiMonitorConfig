@@ -1,69 +1,69 @@
 # Multi Monitor Config
 
-Windows용 모니터 설정 관리 도구. 시스템 트레이에서 저장된 프로필로 빠르게 모니터 설정을 전환할 수 있습니다.
+A Windows monitor configuration management tool. Quickly switch between saved monitor profiles from the system tray.
 
-## 기능
+## Features
 
-- **프로필 저장/로드**: 현재 모니터 설정을 프로필로 저장하고 클릭 한 번으로 복원
-- **모니터 Enable/Disable**: 특정 모니터를 비활성화하는 설정도 저장 가능
-- **자동 감지**: 비활성화된 모니터도 프로필 적용 시 자동으로 다시 활성화
-- **시스템 트레이**: 트레이 아이콘에서 빠르게 프로필 전환
-- **Export/Import**: 프로필을 JSON 파일로 내보내기/가져오기
+- **Save/Load Profiles**: Save current monitor settings as profiles and restore with one click
+- **Enable/Disable Monitors**: Save profiles with specific monitors disabled
+- **Auto-detect**: Automatically re-enable disabled monitors when applying profiles
+- **System Tray**: Quick profile switching from tray icon
+- **Export/Import**: Backup and share profiles as JSON files
 
-## 설치
+## Installation
 
-### 방법 1: Python으로 실행
+### Option 1: Run with Python
 
 ```bash
-# 의존성 설치
+# Install dependencies
 pip install -r requirements.txt
 
-# 실행
+# Run
 python main.py
-# 또는
+# or
 run.bat
 ```
 
-### 방법 2: exe 파일 사용
+### Option 2: Use standalone exe
 
-[Releases](../../releases) 페이지에서 `MultiMonitorConfig.exe` 다운로드 후 실행
+Download `MultiMonitorConfig.exe` from the [Releases](../../releases) page
 
-## 사용법
+## Usage
 
-1. 트레이 아이콘 더블클릭 → 설정 창 열기
-2. **Save** 버튼으로 현재 모니터 설정 저장
-3. 프로필 선택 후 **Apply** 또는 더블클릭으로 적용
-4. 트레이 메뉴에서도 프로필 바로 적용 가능
+1. Double-click tray icon → Opens settings window
+2. Click **Save** to save current monitor configuration
+3. Select a profile and click **Apply** (or double-click) to restore
+4. Right-click tray icon for quick profile switching
 
-### 모니터 비활성화
+### Disabling Monitors
 
-- Current Monitors에서 체크 해제 후 Save → 해당 모니터 disabled로 저장
-- "Disable monitors not in profile" 옵션 체크 시 → 프로필에 없는 모니터 자동 비활성화
+- Uncheck monitors in "Current Monitors" before saving → saves them as disabled
+- Check "Disable monitors not in profile" → automatically disables extra monitors when applying
 
-## 저장 위치
+## Profile Storage
 
-프로필은 `%AppData%\MultiMonitorConfig\profiles.json`에 저장됩니다.
+Profiles are saved at `%AppData%\MultiMonitorConfig\profiles.json`
 
-## 빌드
+## Building
 
 ```bash
-# PyInstaller 설치
+# Install PyInstaller
 pip install pyinstaller
 
-# exe 빌드
+# Build exe
 build.bat
 ```
 
-→ `dist/MultiMonitorConfig.exe` 생성
+Output: `dist/MultiMonitorConfig.exe`
 
-## 기술 스택
+## Tech Stack
 
 - Python 3.7+
 - customtkinter (UI)
-- pystray (시스템 트레이)
+- pystray (System tray)
 - Windows API (EnumDisplayDevices, ChangeDisplaySettingsEx, SetDisplayConfig)
 
-## 스크린샷
+## Screenshot
 
 ```
 ┌─────────────────────────────────────┐
@@ -73,9 +73,9 @@ build.bat
 ├─────────────────────────────────────┤
 │ Saved Profiles                      │
 │   ┌─────────────────────────────┐   │
-│   │ 🖥️ Dual Setup               │   │
-│   │ 🖥️ Single Monitor           │   │
-│   │ 🖥️ Portable                 │   │
+│   │ Dual Setup                  │   │
+│   │ Single Monitor              │   │
+│   │ Portable                    │   │
 │   └─────────────────────────────┘   │
 ├─────────────────────────────────────┤
 │ Profile Detail                      │

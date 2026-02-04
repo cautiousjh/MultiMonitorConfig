@@ -12,7 +12,7 @@ from monitor_api import MonitorInfo, ApplyResult, get_monitors, apply_monitor_se
 def get_config_dir() -> Path:
     """Get the configuration directory."""
     appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-    config_dir = Path(appdata) / "MultiMonitorConfig"
+    config_dir = Path(appdata) / "DisplaySnap"
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
 

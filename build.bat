@@ -4,7 +4,7 @@ pip install -r requirements.txt
 pip install pyinstaller
 
 echo Building executable...
-pyinstaller --onefile --windowed --name "MultiMonitorConfig" --icon=NONE main.py
+pyinstaller --onefile --windowed --name "DisplaySnap" --icon=NONE main.py
 
-echo Done! Executable is in dist\MultiMonitorConfig.exe
+echo Done! Executable is in dist\DisplaySnap.exe
 pause

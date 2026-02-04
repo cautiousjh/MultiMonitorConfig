@@ -94,7 +94,7 @@ class SettingsWindow:
                 self.window = None
 
         self.window = ctk.CTk()
-        self.window.title("Multi Monitor Config")
+        self.window.title("DisplaySnap")
         self.window.geometry("620x600")
         self.window.minsize(500, 500)
         self.window.resizable(True, True)
@@ -409,9 +409,9 @@ class TrayApp:
                 msg += f" (skipped: {len(result.skipped)})"
             if result.disabled:
                 msg += f" (disabled: {len(result.disabled)})"
-            self.icon.notify(msg, "Multi Monitor Config")
+            self.icon.notify(msg, "DisplaySnap")
         else:
-            self.icon.notify(f"Failed to apply: {name}", "Multi Monitor Config")
+            self.icon.notify(f"Failed to apply: {name}", "DisplaySnap")
 
     def _quick_save(self):
         """Quick save current configuration."""
@@ -428,7 +428,7 @@ class TrayApp:
                     if name:
                         self.profile_manager.save_current_as(name)
                         self._update_menu()
-                        self.icon.notify(f"Saved: {name}", "Multi Monitor Config")
+                        self.icon.notify(f"Saved: {name}", "DisplaySnap")
             except Exception as e:
                 print(f"Quick save error: {e}")
 
@@ -450,9 +450,9 @@ class TrayApp:
             try:
                 image = create_icon_image()
                 self.icon = pystray.Icon(
-                    "MMConfig",  # Changed name to avoid Windows tray cache issues
+                    "DisplaySnap",
                     image,
-                    "Multi Monitor Config",
+                    "DisplaySnap",
                     menu=self._build_menu()
                 )
 

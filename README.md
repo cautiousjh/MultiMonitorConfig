@@ -1,6 +1,6 @@
-# Multi Monitor Config
+# DisplaySnap
 
-#### *Quick Start*: Download `MultiMonitorConfig.exe` from the [Releases](../../releases) page
+#### *Quick Start*: Download `DisplaySnap.exe` from the [Releases](../../releases) page
 
 A Windows monitor configuration management tool. Quickly switch between saved monitor profiles from the system tray.
 
@@ -32,7 +32,7 @@ run.bat
 
 ### Option 2: Use standalone exe
 
-Download `MultiMonitorConfig.exe` from the [Releases](../../releases) page
+Download `DisplaySnap.exe` from the [Releases](../../releases) page
 
 ## Usage
 
@@ -48,7 +48,7 @@ Download `MultiMonitorConfig.exe` from the [Releases](../../releases) page
 
 ## Profile Storage
 
-Profiles are saved at `%AppData%\MultiMonitorConfig\profiles.json`
+Profiles are saved at `%AppData%\DisplaySnap\profiles.json`
 
 ## Building
 
@@ -60,7 +60,7 @@ pip install pyinstaller
 build.bat
 ```
 
-Output: `dist/MultiMonitorConfig.exe`
+Output: `dist/DisplaySnap.exe`
 
 ## Tech Stack
 

@@ -1,6 +1,10 @@
 # Multi Monitor Config
 
+**Quick Start**: 
+Download `MultiMonitorConfig.exe` from the [Releases](../../releases) page
+
 A Windows monitor configuration management tool. Quickly switch between saved monitor profiles from the system tray.
+This project was developed using Vibe Coding style.
 
 ## Features
 

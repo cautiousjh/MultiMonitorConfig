@@ -1,6 +1,6 @@
 # DisplaySnap
 
-#### *Quick Start*: Download `DisplaySnap.exe` from the [Releases](../../releases) page
+### *Quick Start*: Download `DisplaySnap.exe` from the [Releases](../../releases) page
 
 A Windows monitor configuration management tool.
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from monitor_api import MonitorInfo, ApplyResult, get_monitors, apply_monitor_settings
+import window_manager
 
 
 def get_config_dir() -> Path:
@@ -116,18 +117,67 @@ class ProfileManager:
             return True
         return False
 
-    def apply_profile(self, name: str, disable_extra: bool = False) -> ApplyResult:
+    def apply_profile(self, name: str, disable_extra: bool = False,
+                       manage_windows: bool = True) -> ApplyResult:
         """Apply a saved profile. Returns detailed result.
 
         Args:
             name: Profile name
             disable_extra: If True, disable monitors not in the profile
+            manage_windows: If True, save/restore window positions automatically
         """
         profile = self.profiles.get(name)
         if not profile:
             return ApplyResult(success=False, failed=["Profile not found"])
 
-        return apply_monitor_settings(profile.monitors, disable_extra=disable_extra)
+        # Get current monitors before applying
+        current_monitors = get_monitors()
+        current_monitor_positions = {(m.position_x, m.position_y) for m in current_monitors}
+
+        # Get monitors that will be enabled in the new profile
+        profile_monitor_positions = {
+            (m.position_x, m.position_y) for m in profile.monitors if m.enabled
+        }
+
+        # Determine which monitors will be disabled
+        monitors_to_disable = current_monitor_positions - profile_monitor_positions
+
+        if manage_windows and monitors_to_disable:
+            # Only save positions when REDUCING monitors (not when expanding)
+            # This preserves the original multi-monitor layout for restoration
+            try:
+                # 1. Save current window positions (for restoration when expanding later)
+                saved_positions = window_manager.get_window_positions()
+                window_manager.save_positions_cache(saved_positions)
+
+                # 2. Move windows from monitors that will be disabled to primary
+                for mon_x, mon_y in monitors_to_disable:
+                    window_manager.move_windows_from_monitor(mon_x, mon_y)
+            except Exception:
+                pass  # Don't fail profile application if window management fails
+
+        # 3. Apply monitor settings
+        result = apply_monitor_settings(profile.monitors, disable_extra=disable_extra)
+
+        if manage_windows and result.success:
+            try:
+                # 4. Check if we enabled any new monitors and restore windows
+                new_monitors = get_monitors()
+                new_monitor_positions = {(m.position_x, m.position_y) for m in new_monitors}
+
+                # Monitors that were just enabled
+                newly_enabled = new_monitor_positions - current_monitor_positions
+
+                if newly_enabled:
+                    # Load cached positions and restore windows that belong to newly enabled monitors
+                    cached = window_manager.load_positions_cache()
+                    for pos in cached:
+                        if (pos.monitor_x, pos.monitor_y) in newly_enabled:
+                            window_manager.restore_window_position(pos)
+            except Exception:
+                pass  # Don't fail if window restoration fails
+
+        return result
 
     def rename_profile(self, old_name: str, new_name: str) -> bool:
         """Rename a profile."""

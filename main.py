@@ -1,4 +1,4 @@
-"""Multi Monitor Config - Entry point."""
+"""DisplaySnap - Entry point."""
 from tray_app import main
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 """System tray application with settings window."""
+import os
 import sys
 import threading
 from tkinter import filedialog
@@ -34,7 +35,7 @@ except Exception:
 
 
 def create_icon_image(size=64):
-    """Create a simple monitor icon with white outline for visibility."""
+    """Create a simple monitor icon with white outline for system tray."""
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
 
@@ -98,6 +99,19 @@ class SettingsWindow:
         self.window.geometry("620x600")
         self.window.minsize(500, 500)
         self.window.resizable(True, True)
+        self.window.attributes('-topmost', True)  # Always on top
+
+        # Set window icon (for taskbar) - delayed to ensure window is ready
+        def set_icon():
+            try:
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                ico_path = os.path.join(script_dir, "icon.ico")
+                if os.path.exists(ico_path):
+                    self.window.iconbitmap(default=ico_path)
+                    self.window.iconbitmap(ico_path)
+            except Exception:
+                pass
+        self.window.after(100, set_icon)
 
         # Main frame
         main_frame = ctk.CTkFrame(self.window)

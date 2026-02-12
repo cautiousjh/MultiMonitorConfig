@@ -150,9 +150,8 @@ class ProfileManager:
                 saved_positions = window_manager.get_window_positions()
                 window_manager.save_positions_cache(saved_positions)
 
-                # 2. Move windows from monitors that will be disabled to primary
-                for mon_x, mon_y in monitors_to_disable:
-                    window_manager.move_windows_from_monitor(mon_x, mon_y)
+                # 2. Move windows from all disabled monitors in a single pass
+                window_manager.move_windows_from_monitors(monitors_to_disable)
             except Exception:
                 pass  # Don't fail profile application if window management fails
 
@@ -171,9 +170,16 @@ class ProfileManager:
                 if newly_enabled:
                     # Load cached positions and restore windows that belong to newly enabled monitors
                     cached = window_manager.load_positions_cache()
+                    # Pre-fetch available monitors and window lookup map once for all restorations
+                    available_monitors = window_manager.get_available_monitor_positions()
+                    wl = window_manager.build_window_lookup()
                     for pos in cached:
+                        # Skip minimized windows (they're in the taskbar, no position to restore)
+                        if pos.state == window_manager.SW_SHOWMINIMIZED:
+                            continue
                         if (pos.monitor_x, pos.monitor_y) in newly_enabled:
-                            window_manager.restore_window_position(pos)
+                            window_manager.restore_window_position(
+                                pos, available_monitors=available_monitors, window_lookup=wl)
             except Exception:
                 pass  # Don't fail if window restoration fails
 

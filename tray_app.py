@@ -277,11 +277,15 @@ class SettingsWindow:
         self._apply_profile(self.selected_profile)
 
     def _apply_profile(self, name: str):
-        """Apply a profile."""
+        """Apply a profile (runs in background thread to avoid UI freeze)."""
         disable_extra = self.disable_extra_var.get() if self.disable_extra_var else False
-        result = self.profile_manager.apply_profile(name, disable_extra=disable_extra)
-        if result.success:
-            self._refresh()
+
+        def do_apply():
+            result = self.profile_manager.apply_profile(name, disable_extra=disable_extra)
+            if result.success and self.window:
+                self.window.after(0, self._refresh)
+
+        threading.Thread(target=do_apply, daemon=True).start()
 
     def _rename_profile(self):
         """Rename selected profile."""
@@ -415,17 +419,20 @@ class TrayApp:
         threading.Thread(target=run_settings, daemon=True).start()
 
     def _apply_profile(self, name: str):
-        """Apply a profile from the tray menu."""
-        result = self.profile_manager.apply_profile(name)
-        if result.success:
-            msg = f"Applied: {name}"
-            if result.skipped:
-                msg += f" (skipped: {len(result.skipped)})"
-            if result.disabled:
-                msg += f" (disabled: {len(result.disabled)})"
-            self.icon.notify(msg, "DisplaySnap")
-        else:
-            self.icon.notify(f"Failed to apply: {name}", "DisplaySnap")
+        """Apply a profile from the tray menu (runs in background thread)."""
+        def do_apply():
+            result = self.profile_manager.apply_profile(name)
+            if result.success:
+                msg = f"Applied: {name}"
+                if result.skipped:
+                    msg += f" (skipped: {len(result.skipped)})"
+                if result.disabled:
+                    msg += f" (disabled: {len(result.disabled)})"
+                self.icon.notify(msg, "DisplaySnap")
+            else:
+                self.icon.notify(f"Failed to apply: {name}", "DisplaySnap")
+
+        threading.Thread(target=do_apply, daemon=True).start()
 
     def _quick_save(self):
         """Quick save current configuration."""

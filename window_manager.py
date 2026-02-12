@@ -2,7 +2,7 @@
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Set, Tuple
 import json
 import os
 from pathlib import Path
@@ -33,6 +33,8 @@ SWP_NOMOVE = 0x0002
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
+
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 
 class RECT(ctypes.Structure):
@@ -77,6 +79,23 @@ psapi = ctypes.windll.psapi
 
 # Function prototypes
 EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+MonitorEnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, wintypes.HDC,
+                                      ctypes.POINTER(RECT), wintypes.LPARAM)
+
+# Set up QueryFullProcessImageNameW prototype once
+kernel32.QueryFullProcessImageNameW.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)
+]
+kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+
+# Reusable buffers for hot-path functions
+_process_buf = ctypes.create_unicode_buffer(260)
+_process_size = wintypes.DWORD(260)
+_pid_dword = wintypes.DWORD()
+_wp_struct = WINDOWPLACEMENT()
+_wp_struct.length = ctypes.sizeof(_wp_struct)
+_mi_struct = MONITORINFO()
+_mi_struct.cbSize = ctypes.sizeof(_mi_struct)
 
 
 @dataclass
@@ -120,23 +139,64 @@ def get_cache_path() -> Path:
     return cache_dir / "window_cache.json"
 
 
-def get_process_name(hwnd: int) -> str:
-    """Get the process name for a window handle."""
-    try:
-        pid = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+# --- Process name cache (PID-based) ---
+_pid_cache: Dict[int, str] = {}
 
-        handle = kernel32.OpenProcess(0x0400 | 0x0010, False, pid.value)  # PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
+SKIP_PROCESSES = frozenset([
+    "TextInputHost.exe",
+    "ShellExperienceHost.exe",
+    "SearchHost.exe",
+    "StartMenuExperienceHost.exe",
+])
+
+SKIP_TITLES = frozenset([
+    "Program Manager",
+    "Windows Input Experience",
+    "Microsoft Text Input Application",
+    "Settings",
+])
+
+
+def _get_pid(hwnd: int) -> int:
+    """Get process ID for a window handle."""
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(_pid_dword))
+    return _pid_dword.value
+
+
+def _get_process_name_by_pid(pid: int) -> str:
+    """Get process name by PID, using cache.
+
+    Uses QueryFullProcessImageNameW with PROCESS_QUERY_LIMITED_INFORMATION
+    for lower permission requirements and fewer API calls.
+    """
+    cached = _pid_cache.get(pid)
+    if cached is not None:
+        return cached
+
+    name = ""
+    try:
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if handle:
             try:
-                buffer = ctypes.create_unicode_buffer(260)
-                if psapi.GetModuleBaseNameW(handle, None, buffer, 260):
-                    return buffer.value
+                _process_size.value = 260
+                if kernel32.QueryFullProcessImageNameW(
+                    handle, 0, _process_buf, ctypes.byref(_process_size)
+                ):
+                    # Extract filename from full path: "C:\...\app.exe" -> "app.exe"
+                    full_path = _process_buf.value
+                    name = full_path.rsplit('\\', 1)[-1]
             finally:
                 kernel32.CloseHandle(handle)
     except Exception:
         pass
-    return ""
+
+    _pid_cache[pid] = name
+    return name
+
+
+def get_process_name(hwnd: int) -> str:
+    """Get the process name for a window handle."""
+    return _get_process_name_by_pid(_get_pid(hwnd))
 
 
 def get_window_title(hwnd: int) -> str:
@@ -152,46 +212,30 @@ def get_window_title(hwnd: int) -> str:
     return ""
 
 
-def is_real_window(hwnd: int) -> bool:
-    """Check if this is a real user window (not system/hidden)."""
-    if not user32.IsWindowVisible(hwnd):
-        return False
+def _get_monitor_rects() -> List[Tuple[int, int, int, int, int, int]]:
+    """Enumerate all monitors once. Returns list of (left, top, right, bottom, left, top).
 
-    # Get window styles
-    style = user32.GetWindowLongW(hwnd, GWL_STYLE)
-    ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+    Last two values are the monitor origin (same as left, top) for convenience.
+    """
+    monitors = []
 
-    # Skip tool windows (floating toolbars, etc.)
-    if ex_style & WS_EX_TOOLWINDOW and not (ex_style & WS_EX_APPWINDOW):
-        return False
+    def callback(hmonitor, hdc, lprect, lparam):
+        if user32.GetMonitorInfoW(hmonitor, ctypes.byref(_mi_struct)):
+            r = _mi_struct.rcMonitor
+            monitors.append((r.left, r.top, r.right, r.bottom))
+        return True
 
-    # Skip windows with no title (often system windows)
-    title = get_window_title(hwnd)
-    if not title:
-        return False
+    user32.EnumDisplayMonitors(None, None, MonitorEnumProc(callback), 0)
+    return monitors
 
-    # Skip certain system windows
-    skip_titles = [
-        "Program Manager",
-        "Windows Input Experience",
-        "Microsoft Text Input Application",
-        "Settings",
-    ]
-    if title in skip_titles:
-        return False
 
-    # Skip windows belonging to certain processes
-    process = get_process_name(hwnd)
-    skip_processes = [
-        "TextInputHost.exe",
-        "ShellExperienceHost.exe",
-        "SearchHost.exe",
-        "StartMenuExperienceHost.exe",
-    ]
-    if process in skip_processes:
-        return False
-
-    return True
+def _find_monitor_for_point(cx: int, cy: int,
+                             monitor_rects: List[Tuple[int, int, int, int]]) -> Tuple[int, int]:
+    """Find which monitor contains the given point using pre-enumerated rects."""
+    for left, top, right, bottom in monitor_rects:
+        if left <= cx < right and top <= cy < bottom:
+            return (left, top)
+    return (0, 0)
 
 
 def get_window_monitor_pos(hwnd: int) -> tuple:
@@ -207,7 +251,6 @@ def get_window_monitor_pos(hwnd: int) -> tuple:
 
 def get_primary_monitor_rect() -> tuple:
     """Get the primary monitor's work area (x, y, width, height)."""
-    # Get primary monitor handle (NULL point = primary)
     pt = POINT(0, 0)
     hmonitor = user32.MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY)
     if hmonitor:
@@ -223,13 +266,20 @@ def get_primary_monitor_rect() -> tuple:
     return (0, 0, 1920, 1080)  # Fallback
 
 
-def get_all_windows() -> List[int]:
-    """Get all visible user windows."""
+def _enum_all_visible_hwnds() -> List[int]:
+    """Enumerate all visible top-level window handles (minimal filtering)."""
     windows = []
 
     def enum_callback(hwnd, lParam):
-        if is_real_window(hwnd):
-            windows.append(hwnd)
+        if not user32.IsWindowVisible(hwnd):
+            return True
+
+        # Quick style check (no API calls beyond GetWindowLong)
+        ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        if ex_style & WS_EX_TOOLWINDOW and not (ex_style & WS_EX_APPWINDOW):
+            return True
+
+        windows.append(hwnd)
         return True
 
     user32.EnumWindows(EnumWindowsProc(enum_callback), 0)
@@ -237,29 +287,66 @@ def get_all_windows() -> List[int]:
 
 
 def get_window_positions() -> List[WindowPosition]:
-    """Get positions of all visible windows."""
+    """Get positions of all visible windows.
+
+    Optimized:
+    - Enumerates windows once
+    - Caches process names by PID
+    - Retrieves title/process only once per window
+    - Pre-enumerates monitor rects for coordinate-based lookup (no per-window API calls)
+    - Uses QueryFullProcessImageNameW (lower permissions)
+    - Reuses ctypes buffers
+    """
+    global _pid_cache
+    _pid_cache = {}  # Fresh cache per call
+
+    # Pre-enumerate monitor rects once (eliminates 2 API calls per window)
+    monitor_rects = _get_monitor_rects()
+
     positions = []
 
-    for hwnd in get_all_windows():
+    for hwnd in _enum_all_visible_hwnds():
         try:
-            wp = WINDOWPLACEMENT()
-            wp.length = ctypes.sizeof(wp)
-
-            if not user32.GetWindowPlacement(hwnd, ctypes.byref(wp)):
+            # Get title first (cheap) for filtering
+            title = get_window_title(hwnd)
+            if not title:
+                continue
+            if title in SKIP_TITLES:
                 continue
 
-            rect = wp.rcNormalPosition
-            monitor_x, monitor_y = get_window_monitor_pos(hwnd)
+            # Get process name (cached by PID)
+            pid = _get_pid(hwnd)
+            process_name = _get_process_name_by_pid(pid)
+            if process_name in SKIP_PROCESSES:
+                continue
+
+            # Get window placement (reuse struct)
+            if not user32.GetWindowPlacement(hwnd, ctypes.byref(_wp_struct)):
+                continue
+
+            rect = _wp_struct.rcNormalPosition
+
+            # Coordinate-based monitor lookup (no API call)
+            cx = (rect.left + rect.right) // 2
+            cy = (rect.top + rect.bottom) // 2
+            monitor_x, monitor_y = _find_monitor_for_point(cx, cy, monitor_rects)
+
+            # Fallback for minimized/off-screen windows
+            if monitor_x == 0 and monitor_y == 0 and monitor_rects:
+                first = monitor_rects[0]
+                if not (first[0] == 0 and first[1] == 0):
+                    # (0,0) isn't a real monitor origin, use MonitorFromWindow
+                    monitor_x, monitor_y = get_window_monitor_pos(hwnd)
 
             pos = WindowPosition(
                 hwnd=hwnd,
-                title=get_window_title(hwnd),
-                process_name=get_process_name(hwnd),
+                title=title,
+                process_name=process_name,
                 x=rect.left,
                 y=rect.top,
                 width=rect.right - rect.left,
                 height=rect.bottom - rect.top,
-                state=wp.showCmd,
+                state=_wp_struct.showCmd,
                 monitor_x=monitor_x,
                 monitor_y=monitor_y,
             )
@@ -268,6 +355,23 @@ def get_window_positions() -> List[WindowPosition]:
             continue
 
     return positions
+
+
+def get_all_windows() -> List[int]:
+    """Get all visible user windows (uses full filtering)."""
+    global _pid_cache
+    _pid_cache = {}
+
+    windows = []
+    for hwnd in _enum_all_visible_hwnds():
+        title = get_window_title(hwnd)
+        if not title or title in SKIP_TITLES:
+            continue
+        process_name = _get_process_name_by_pid(_get_pid(hwnd))
+        if process_name in SKIP_PROCESSES:
+            continue
+        windows.append(hwnd)
+    return windows
 
 
 def save_positions_cache(positions: List[WindowPosition]) -> bool:
@@ -298,16 +402,12 @@ def load_positions_cache() -> List[WindowPosition]:
 
 def is_position_on_monitor(x: int, y: int, monitor_x: int, monitor_y: int) -> bool:
     """Check if a position belongs to a specific monitor (by monitor origin)."""
-    # A window is considered "on" a monitor if its top-left corner
-    # is within that monitor's bounds. This is a simple heuristic.
-    # We just check if the saved monitor origin matches.
     return True  # Will be refined when we have the actual monitor list
 
 
-def move_window_to_primary(hwnd: int) -> bool:
-    """Move a window to the primary monitor."""
+def _move_window_to_primary(hwnd: int, primary_rect: Tuple[int, int, int, int]) -> bool:
+    """Move a window to the primary monitor (with pre-fetched primary rect)."""
     try:
-        # Get current window placement
         wp = WINDOWPLACEMENT()
         wp.length = ctypes.sizeof(wp)
         if not user32.GetWindowPlacement(hwnd, ctypes.byref(wp)):
@@ -317,21 +417,16 @@ def move_window_to_primary(hwnd: int) -> bool:
         width = rect.right - rect.left
         height = rect.bottom - rect.top
 
-        # Get primary monitor work area
-        pri_x, pri_y, pri_w, pri_h = get_primary_monitor_rect()
+        pri_x, pri_y, pri_w, pri_h = primary_rect
 
-        # Calculate new position (centered or at offset)
-        # Keep some offset from corner to avoid stacking exactly
-        new_x = pri_x + 50 + (hwnd % 10) * 30  # Slight stagger based on hwnd
+        new_x = pri_x + 50 + (hwnd % 10) * 30
         new_y = pri_y + 50 + (hwnd % 10) * 30
 
-        # Ensure window fits within primary monitor
         if new_x + width > pri_x + pri_w:
             new_x = pri_x + pri_w - width - 10
         if new_y + height > pri_y + pri_h:
             new_y = pri_y + pri_h - height - 10
 
-        # Update placement
         wp.rcNormalPosition.left = new_x
         wp.rcNormalPosition.top = new_y
         wp.rcNormalPosition.right = new_x + width
@@ -340,6 +435,11 @@ def move_window_to_primary(hwnd: int) -> bool:
         return bool(user32.SetWindowPlacement(hwnd, ctypes.byref(wp)))
     except Exception:
         return False
+
+
+def move_window_to_primary(hwnd: int) -> bool:
+    """Move a window to the primary monitor."""
+    return _move_window_to_primary(hwnd, get_primary_monitor_rect())
 
 
 def move_windows_from_monitor(monitor_x: int, monitor_y: int) -> int:
@@ -352,21 +452,73 @@ def move_windows_from_monitor(monitor_x: int, monitor_y: int) -> int:
     Returns:
         Number of windows moved
     """
+    return move_windows_from_monitors({(monitor_x, monitor_y)})
+
+
+def move_windows_from_monitors(monitor_positions: Set[Tuple[int, int]]) -> int:
+    """Move all windows from multiple monitors to primary in a single pass.
+
+    Args:
+        monitor_positions: Set of (monitor_x, monitor_y) tuples
+
+    Returns:
+        Number of windows moved
+    """
+    if not monitor_positions:
+        return 0
+
+    # Cache primary rect once for the entire batch
+    primary_rect = get_primary_monitor_rect()
+    # Pre-enumerate monitor rects for coordinate lookup
+    monitor_rects = _get_monitor_rects()
+
     moved = 0
-    for hwnd in get_all_windows():
+    for hwnd in _enum_all_visible_hwnds():
         try:
-            win_mon_x, win_mon_y = get_window_monitor_pos(hwnd)
-            if win_mon_x == monitor_x and win_mon_y == monitor_y:
-                if move_window_to_primary(hwnd):
+            title = get_window_title(hwnd)
+            if not title or title in SKIP_TITLES:
+                continue
+
+            # Coordinate-based monitor lookup
+            if not user32.GetWindowPlacement(hwnd, ctypes.byref(_wp_struct)):
+                continue
+            rect = _wp_struct.rcNormalPosition
+            cx = (rect.left + rect.right) // 2
+            cy = (rect.top + rect.bottom) // 2
+            win_mon = _find_monitor_for_point(cx, cy, monitor_rects)
+
+            if win_mon in monitor_positions:
+                if _move_window_to_primary(hwnd, primary_rect):
                     moved += 1
         except Exception:
             continue
     return moved
 
 
+def build_window_lookup() -> Dict[Tuple[str, str], int]:
+    """Build a (title, process_name) -> hwnd lookup map in a single pass.
+
+    Used by batch restore to avoid re-enumerating all windows per restore target.
+    """
+    global _pid_cache
+    _pid_cache = {}
+
+    lookup: Dict[Tuple[str, str], int] = {}
+    for hwnd in _enum_all_visible_hwnds():
+        try:
+            title = get_window_title(hwnd)
+            if not title:
+                continue
+            process_name = _get_process_name_by_pid(_get_pid(hwnd))
+            lookup[(title, process_name)] = hwnd
+        except Exception:
+            continue
+    return lookup
+
+
 def find_window_by_title_and_process(title: str, process_name: str) -> Optional[int]:
     """Find a window by title and process name."""
-    for hwnd in get_all_windows():
+    for hwnd in _enum_all_visible_hwnds():
         try:
             if get_window_title(hwnd) == title and get_process_name(hwnd) == process_name:
                 return hwnd
@@ -375,54 +527,55 @@ def find_window_by_title_and_process(title: str, process_name: str) -> Optional[
     return None
 
 
+def get_available_monitor_positions() -> Set[Tuple[int, int]]:
+    """Get set of all available monitor positions. Single enumeration."""
+    return {(left, top) for left, top, _, _ in _get_monitor_rects()}
+
+
 def is_monitor_available(monitor_x: int, monitor_y: int) -> bool:
     """Check if a monitor at the given position exists."""
-    # Enumerate all monitors to check
-    result = [False]
-
-    def monitor_enum_callback(hmonitor, hdc, lprect, lparam):
-        mi = MONITORINFO()
-        mi.cbSize = ctypes.sizeof(mi)
-        if user32.GetMonitorInfoW(hmonitor, ctypes.byref(mi)):
-            if mi.rcMonitor.left == monitor_x and mi.rcMonitor.top == monitor_y:
-                result[0] = True
-        return True
-
-    MonitorEnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, wintypes.HDC,
-                                          ctypes.POINTER(RECT), wintypes.LPARAM)
-    user32.EnumDisplayMonitors(None, None, MonitorEnumProc(monitor_enum_callback), 0)
-
-    return result[0]
+    return (monitor_x, monitor_y) in get_available_monitor_positions()
 
 
-def restore_window_position(saved: WindowPosition) -> bool:
+def restore_window_position(saved: WindowPosition,
+                             available_monitors: Optional[Set[Tuple[int, int]]] = None,
+                             window_lookup: Optional[Dict[Tuple[str, str], int]] = None) -> bool:
     """Restore a single window to its saved position.
+
+    Args:
+        saved: The saved window position
+        available_monitors: Pre-fetched set of (x, y) monitor positions.
+                           If None, will query monitors (slower).
+        window_lookup: Pre-built (title, process_name)->hwnd map.
+                      If None, falls back to full enumeration (slower).
 
     Returns True if restored, False if skipped/failed.
     """
     try:
-        # First, try to find the window by hwnd
         hwnd = saved.hwnd
         if not user32.IsWindow(hwnd):
-            # Window handle is invalid, try to find by title + process
-            hwnd = find_window_by_title_and_process(saved.title, saved.process_name)
+            # Use pre-built lookup map (O(1)) or fall back to full scan (O(N))
+            if window_lookup is not None:
+                hwnd = window_lookup.get((saved.title, saved.process_name), 0)
+            else:
+                hwnd = find_window_by_title_and_process(saved.title, saved.process_name)
             if not hwnd:
                 return False
 
         # Check if the saved monitor is available
-        if not is_monitor_available(saved.monitor_x, saved.monitor_y):
-            # Monitor not available, keep window where it is
-            return False
+        if available_monitors is not None:
+            if (saved.monitor_x, saved.monitor_y) not in available_monitors:
+                return False
+        else:
+            if not is_monitor_available(saved.monitor_x, saved.monitor_y):
+                return False
 
-        # Restore the window placement
         wp = WINDOWPLACEMENT()
         wp.length = ctypes.sizeof(wp)
 
-        # Get current placement to preserve some fields
         if not user32.GetWindowPlacement(hwnd, ctypes.byref(wp)):
             return False
 
-        # Set saved position
         wp.showCmd = saved.state
         wp.rcNormalPosition.left = saved.x
         wp.rcNormalPosition.top = saved.y
@@ -434,15 +587,26 @@ def restore_window_position(saved: WindowPosition) -> bool:
         return False
 
 
-def restore_window_positions(saved_positions: List[WindowPosition]) -> int:
+def restore_window_positions(saved_positions: List[WindowPosition],
+                              skip_minimized: bool = True) -> int:
     """Restore multiple windows to their saved positions.
+
+    Args:
+        saved_positions: List of saved window positions
+        skip_minimized: If True, skip minimized windows (default)
 
     Returns:
         Number of windows successfully restored
     """
+    # Pre-fetch available monitors and window lookup map once
+    available_monitors = get_available_monitor_positions()
+    wl = build_window_lookup()
+
     restored = 0
     for saved in saved_positions:
-        if restore_window_position(saved):
+        if skip_minimized and saved.state == SW_SHOWMINIMIZED:
+            continue
+        if restore_window_position(saved, available_monitors=available_monitors, window_lookup=wl):
             restored += 1
     return restored
 
@@ -464,8 +628,6 @@ def get_monitors_info() -> List[Dict]:
             })
         return True
 
-    MonitorEnumProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, wintypes.HDC,
-                                          ctypes.POINTER(RECT), wintypes.LPARAM)
     user32.EnumDisplayMonitors(None, None, MonitorEnumProc(monitor_enum_callback), 0)
 
     return monitors
@@ -473,6 +635,7 @@ def get_monitors_info() -> List[Dict]:
 
 if __name__ == "__main__":
     import sys
+    import time
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
     print("=" * 60)
@@ -486,10 +649,13 @@ if __name__ == "__main__":
     print("=" * 60)
     print("WINDOWS:")
     print("=" * 60)
+    start = time.perf_counter()
     positions = get_window_positions()
+    elapsed = time.perf_counter() - start
     for p in positions:
         title = p.title[:50].encode('ascii', 'replace').decode('ascii')
         print(f"  [{p.process_name}] {title}")
         print(f"    Position: ({p.x}, {p.y}) Size: {p.width}x{p.height}")
         print(f"    Monitor: ({p.monitor_x}, {p.monitor_y}) State: {p.state}")
         print()
+    print(f"Retrieved {len(positions)} windows in {elapsed*1000:.1f}ms")

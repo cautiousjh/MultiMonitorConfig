@@ -430,14 +430,34 @@ def apply_monitor_settings(monitors: List[MonitorInfo], disable_extra: bool = Fa
     """
     result = ApplyResult(success=True)
 
-    # First, try to detect and attach any physically connected but disabled monitors
-    # This is needed when a monitor was disabled and needs to be re-enabled
-    detect_displays()
-
-    # Get current state after detection
+    # Get current state BEFORE detection (fast - just device enumeration)
     connected = get_connected_device_names()  # Currently active monitors
     all_devices = get_all_device_names()       # All monitors including disabled
     profile_device_names = {m.device_name for m in monitors}
+
+    # Only call detect_displays() when we need to re-enable a disabled monitor.
+    # This saves 1-3 seconds on every apply that doesn't need re-enabling.
+    needs_reenable = any(
+        m.enabled and m.device_name not in connected and m.device_name in all_devices
+        for m in monitors
+    )
+    if needs_reenable:
+        detect_displays()
+        # Re-query after detection since new monitors may have appeared
+        connected = get_connected_device_names()
+        all_devices = get_all_device_names()
+
+    # Determine primary from connected set (avoids full get_monitors() call)
+    # We only need to know which device is primary to prevent disabling it.
+    _primary_devices = set()
+    device = DISPLAY_DEVICE()
+    device.cb = ctypes.sizeof(device)
+    _i = 0
+    while user32.EnumDisplayDevicesW(None, _i, ctypes.byref(device), 0):
+        if device.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE:
+            _primary_devices.add(device.DeviceName)
+        _i += 1
+    primary_devices = _primary_devices
 
     # First: disable monitors marked as disabled in the profile
     for monitor in monitors:
@@ -452,9 +472,7 @@ def apply_monitor_settings(monitors: List[MonitorInfo], disable_extra: bool = Fa
                 continue
 
             # Check if it's the primary monitor - can't disable primary
-            current_monitors = get_monitors()
-            is_primary = any(m.device_name == monitor.device_name and m.is_primary for m in current_monitors)
-            if is_primary:
+            if monitor.device_name in primary_devices:
                 result.failed.append(f"{monitor.device_name} (primary cannot be disabled)")
                 continue
 
@@ -466,14 +484,13 @@ def apply_monitor_settings(monitors: List[MonitorInfo], disable_extra: bool = Fa
 
     # Second: disable extra monitors not in the profile (if option enabled)
     if disable_extra:
-        current_monitors = get_monitors()
-        for current in current_monitors:
-            if current.device_name not in profile_device_names:
-                if current.is_primary:
+        for device_name in connected:
+            if device_name not in profile_device_names:
+                if device_name in primary_devices:
                     # Can't disable primary monitor
                     continue
-                if disable_monitor(current.device_name, use_noreset=True):
-                    result.disabled.append(current.device_name)
+                if disable_monitor(device_name, use_noreset=True):
+                    result.disabled.append(device_name)
 
     # Third: configure enabled monitors (including re-enabling disabled ones)
     for monitor in monitors:
